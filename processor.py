@@ -14,6 +14,10 @@ from botocore.config import Config
 import psycopg2
 from psycopg2.extras import Json, DictCursor
 
+# Import the agent workflow function from agent_workflow.py.
+# This module should export a process_email(email_content: str) -> dict.
+from agent_workflow import process_email
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -226,8 +230,6 @@ class EmailProcessor:
         """Parse comma-separated email addresses into a list"""
         if not email_string:
             return []
-        
-        # Simple split by comma, more sophisticated parsing could be implemented
         return [addr.strip() for addr in email_string.split(',')]
 
     def _store_attachment_s3(self, content, filename, message_id):
@@ -253,7 +255,6 @@ class EmailProcessor:
             )
             provider = cursor.fetchone()
             cursor.close()
-            
             if provider:
                 return provider
             return None
@@ -261,112 +262,79 @@ class EmailProcessor:
             logger.error(f"Error getting LLM provider: {e}")
             return None
 
-    def simulate_llm_response(self, email_data, mailbox_type):
-        """
-        Simulate LLM response based on email content and mailbox type.
-        In production, replace this function with an actual LLM API call.
-        """
-        subject = email_data.get('subject', 'No Subject')
-        sender = email_data.get('from_name', 'Customer')
-        
-        # Get LLM provider (in production, use this to call the actual LLM API)
-        provider = self._get_llm_provider()
-        provider_id = provider['provider_id'] if provider else None
-        provider_type = provider['provider_type'] if provider else 'simulated'
-        
-        # Adjust response based on mailbox type
-        if mailbox_type == 'support':
+    def process_email_file(self, file_path):
+        """Process a single email file and integrate agent workflow analysis."""
+        try:
+            with open(file_path, 'rb') as f:
+                raw_email = f.read()
+            
+            # Parse the email and extract content.
+            email_data = self.extract_email_content(raw_email)
+            
+            # Check if the email is for a valid mailbox.
+            is_valid, mailbox_type = self.is_valid_mailbox(email_data.get('to_address', ''))
+            if not is_valid:
+                logger.warning(f"Email sent to non-configured mailbox: {email_data.get('to_address', '')}")
+                email_data['status'] = 'ignored'
+                email_data['notes'] = 'Email sent to non-configured mailbox'
+                mailbox_type = 'unconfigured'
+            
+            # *** Integrate Agent Workflow ***
+            # Use the plain text body (or fallback to HTML) as input for the agent workflow.
+            email_content_for_agent = email_data.get("body_text") or email_data.get("body_html") or ""
+            # Call the agent workflow which handles PII redaction, structured output, retries, etc.
+            agent_output = process_email(email_content_for_agent)
+            # Merge the agent output into the email data.
+            email_data["agent_analysis"] = agent_output
+            
+            # Store the enriched email data in the database.
+            email_id = self.store_email_in_db(email_data, mailbox_type)
+            
             return {
-                'subject': f"Re: {subject}",
-                'body_text': f"Thank you for contacting our support team regarding '{subject}'.\n\nWe've received your request and will be in touch within 24 hours.\n\nBest regards,\nSupport Team",
-                'body_html': f"<p>Thank you for contacting our support team regarding '{subject}'.</p><p>We've received your request and will be in touch within 24 hours.</p><p>Best regards,<br>Support Team</p>",
-                'confidence': 0.85,
-                'llm_provider_id': provider_id,
-                'llm_model': 'simulated-model'
+                'email_id': email_id,
+                'status': 'processed',
+                'mailbox_type': mailbox_type
             }
-        elif mailbox_type == 'sales':
+            
+        except Exception as e:
+            logger.error(f"Error processing email file {file_path}: {e}")
             return {
-                'subject': f"Re: {subject}",
-                'body_text': f"Thank you for your interest, {sender}.\n\nI appreciate your inquiry about '{subject}'. Let's schedule a call to discuss your needs further.\n\nBest regards,\nSales Team",
-                'body_html': f"<p>Thank you for your interest, {sender}.</p><p>I appreciate your inquiry about '{subject}'. Let's schedule a call to discuss your needs further.</p><p>Best regards,<br>Sales Team</p>",
-                'confidence': 0.90,
-                'llm_provider_id': provider_id,
-                'llm_model': 'simulated-model'
-            }
-        else:
-            return {
-                'subject': f"Re: {subject}",
-                'body_text': f"Thank you for your message regarding '{subject}'.\n\nWe've received your email and will respond shortly.\n\nBest regards,\nThe Team",
-                'body_html': f"<p>Thank you for your message regarding '{subject}'.</p><p>We've received your email and will respond shortly.</p><p>Best regards,<br>The Team</p>",
-                'confidence': 0.80,
-                'llm_provider_id': provider_id,
-                'llm_model': 'simulated-model'
+                'status': 'error',
+                'error': str(e)
             }
 
-    def analyze_email_content(self, email_data):
-        """
-        Analyze email content using LLM.
-        In production, replace this function with an actual LLM API call.
-        """
-        provider = self._get_llm_provider()
-        provider_id = provider['provider_id'] if provider else None
-        
-        # Simulate analysis results
-        subject = email_data.get('subject', '')
-        body = email_data.get('body_text', '')
-        
-        # Simple heuristics for demonstration
-        urgency = 5  # default medium urgency
-        if any(word in subject.lower() for word in ['urgent', 'immediate', 'asap', 'emergency']):
-            urgency = 9
-        elif any(word in subject.lower() for word in ['question', 'inquiry', 'help']):
-            urgency = 6
-        
-        # Determine categories
-        categories = []
-        if any(word in subject.lower() or word in body.lower() for word in ['price', 'cost', 'quote', 'pricing']):
-            categories.append('pricing')
-        if any(word in subject.lower() or word in body.lower() for word in ['account', 'login', 'password', 'access']):
-            categories.append('account')
-        if any(word in subject.lower() or word in body.lower() for word in ['error', 'bug', 'issue', 'problem', 'not working']):
-            categories.append('technical_issue')
-        
-        # Default to general inquiry if no categories detected
-        if not categories:
-            categories.append('general_inquiry')
-        
-        # Detect sentiment (very basic implementation)
-        positive_words = ['thank', 'great', 'good', 'love', 'excellent', 'appreciate']
-        negative_words = ['bad', 'poor', 'issue', 'problem', 'disappointed', 'unhappy', 'refund']
-        
-        positive_count = sum(1 for word in positive_words if word in body.lower())
-        negative_count = sum(1 for word in negative_words if word in body.lower())
-        
-        if positive_count > negative_count:
-            sentiment = 'positive'
-        elif negative_count > positive_count:
-            sentiment = 'negative'
-        else:
-            sentiment = 'neutral'
-        
-        # Simple PII detection (very basic)
-        contains_pii = False
-        if any(pattern in body.lower() for pattern in ['ssn', 'social security', 'credit card', 'passport']):
-            contains_pii = True
-        
-        return {
-            'email_id': email_data.get('email_id'),
-            'categories': categories,
-            'sentiment': sentiment,
-            'intent': categories[0],  # Simplification, use primary category as intent
-            'urgency': urgency,
-            'required_info': [],  # Would be determined by more sophisticated analysis
-            'contains_pii': contains_pii,
-            'summary': f"Subject: {subject}",  # Simple summary
-            'llm_provider_id': provider_id,
-            'llm_model': 'simulated-model',
-            'confidence': 0.75
+    def process_emails_from_directory(self, directory):
+        """Process all email files in a directory"""
+        results = {
+            'processed': 0,
+            'errors': 0,
+            'details': []
         }
+        
+        for filename in os.listdir(directory):
+            if filename.endswith('.eml'):
+                file_path = os.path.join(directory, filename)
+                try:
+                    result = self.process_email_file(file_path)
+                    results['details'].append({
+                        'file': filename,
+                        'result': result
+                    })
+                    if result.get('status') == 'processed':
+                        results['processed'] += 1
+                    else:
+                        results['errors'] += 1
+                except Exception as e:
+                    results['errors'] += 1
+                    results['details'].append({
+                        'file': filename,
+                        'result': {
+                            'status': 'error',
+                            'error': str(e)
+                        }
+                    })
+        
+        return results
 
     def store_email_in_db(self, email_data, mailbox_type):
         """Store email data in PostgreSQL database"""
@@ -422,46 +390,7 @@ class EmailProcessor:
                     attachment.get('storage_path', '')
                 ))
             
-            # Generate draft reply
-            llm_response = self.simulate_llm_response(email_data, mailbox_type)
-            
-            # Store draft reply
-            cursor.execute("""
-                INSERT INTO draft_replies (
-                    email_id, subject, body_text, body_html, confidence, 
-                    llm_provider_id, llm_model
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING draft_id
-            """, (
-                email_id,
-                llm_response.get('subject'),
-                llm_response.get('body_text'),
-                llm_response.get('body_html', ''),
-                llm_response.get('confidence'),
-                llm_response.get('llm_provider_id'),
-                llm_response.get('llm_model')
-            ))
-            
-            # Store email analysis
-            analysis = self.analyze_email_content(email_data)
-            
-            cursor.execute("""
-                INSERT INTO email_analysis (
-                    email_id, categories, sentiment, intent, urgency,
-                    contains_pii, summary, llm_provider_id, llm_model, confidence
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                email_id,
-                analysis.get('categories'),
-                analysis.get('sentiment'),
-                analysis.get('intent'),
-                analysis.get('urgency'),
-                analysis.get('contains_pii'),
-                analysis.get('summary'),
-                analysis.get('llm_provider_id'),
-                analysis.get('llm_model'),
-                analysis.get('confidence')
-            ))
+            # (Optional) You can also store agent_analysis in a dedicated table if needed.
             
             # Commit the transaction
             self.db_conn.commit()
@@ -471,78 +400,9 @@ class EmailProcessor:
             return email_id
             
         except Exception as e:
-            # Rollback in case of error
             self.db_conn.rollback()
             logger.error(f"Error storing email in database: {e}")
             raise
-
-    def process_email_file(self, file_path):
-        """Process a single email file"""
-        try:
-            with open(file_path, 'rb') as f:
-                raw_email = f.read()
-            
-            # Parse the email and extract content
-            email_data = self.extract_email_content(raw_email)
-            
-            # Check if this is for a valid mailbox
-            is_valid, mailbox_type = self.is_valid_mailbox(email_data.get('to_address', ''))
-            if not is_valid:
-                logger.warning(f"Email sent to non-configured mailbox: {email_data.get('to_address', '')}")
-                email_data['status'] = 'ignored'
-                email_data['notes'] = 'Email sent to non-configured mailbox'
-                mailbox_type = 'unconfigured'
-            
-            # Store the email data in database
-            email_id = self.store_email_in_db(email_data, mailbox_type)
-            
-            return {
-                'email_id': email_id,
-                'status': 'processed',
-                'mailbox_type': mailbox_type
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing email file {file_path}: {e}")
-            return {
-                'status': 'error',
-                'error': str(e)
-            }
-
-    def process_emails_from_directory(self, directory):
-        """Process all email files in a directory"""
-        results = {
-            'processed': 0,
-            'errors': 0,
-            'details': []
-        }
-        
-        for filename in os.listdir(directory):
-            if filename.endswith('.eml'):
-                file_path = os.path.join(directory, filename)
-                try:
-                    result = self.process_email_file(file_path)
-                    results['details'].append({
-                        'file': filename,
-                        'result': result
-                    })
-                    
-                    if result.get('status') == 'processed':
-                        results['processed'] += 1
-                    else:
-                        results['errors'] += 1
-                        
-                except Exception as e:
-                    results['errors'] += 1
-                    results['details'].append({
-                        'file': filename,
-                        'result': {
-                            'status': 'error',
-                            'error': str(e)
-                        }
-                    })
-        
-        return results
 
     def cleanup(self):
         """Close database connection and any other cleanup needed"""

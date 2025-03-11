@@ -133,3 +133,59 @@ CREATE INDEX idx_emails_conversation_id ON emails(conversation_id);
 CREATE INDEX idx_emails_mailbox_type ON emails(mailbox_type);
 CREATE INDEX idx_emails_received_timestamp ON emails(received_timestamp);
 CREATE INDEX idx_draft_replies_email_id ON draft_replies(email_id);
+
+
+
+
+/**
+ * Backend Architecture Overview
+ * 
+ * The system is built with a modular design to allow easy swapping of:
+ * - Email providers (Gmail, Outlook, etc.)
+ * - LLM providers (OpenAI, Anthropic, etc.)
+ * - Database systems (PostgreSQL initially, but could be MongoDB, etc.)
+ */
+
+// Directory Structure
+/**
+/backend
+  /src
+    /api                 # API routes
+      /v1                # Version 1 API endpoints
+        /emails.js       # Email CRUD operations
+        /drafts.js       # Draft replies operations
+        /analysis.js     # Email analysis operations
+        /providers.js    # Provider management
+        /users.js        # User management
+    /services            # Business logic
+      /email             # Email processing services
+        /providers       # Email provider implementations
+          /gmail.js      # Gmail implementation
+          /outlook.js    # Outlook implementation
+          /index.js      # Provider factory
+        /fetcher.js      # Email fetching service
+        /sender.js       # Email sending service
+      /llm               # LLM processing services
+        /providers       # LLM provider implementations
+          /openai.js     # OpenAI implementation
+          /anthropic.js  # Claude/Anthropic implementation
+          /gemini.js     # Google Gemini implementation
+          /index.js      # Provider factory
+        /analyzer.js     # Email analysis service
+        /drafter.js      # Draft reply generation service
+      /database          # Database services
+        /models          # Database models
+        /repositories    # Data access repositories
+    /utils               # Utility functions
+    /config              # Configuration
+    /middleware          # Middleware functions
+    /jobs               # Scheduled jobs (email fetching, etc.)
+    app.js              # Express app setup
+    server.js           # Server entry point
+  /prisma               # Prisma ORM (if using)
+    schema.prisma       # Prisma schema
+  /migrations           # Database migrations
+  /tests                # Tests
+  package.json          # Dependencies
+  .env                  # Environment variables
+ */

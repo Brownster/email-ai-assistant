@@ -18,5 +18,5 @@ python email_fetcher.py --db-connection "postgres://user:pass@localhost/email_as
 python email_fetcher.py --setup-provider --provider-type imap --server "imap.example.com" --username "user" --password "pass"
 
 
-#setup test db
+## Setup test db
 psql -U your_username -d your_database -f setup_test_data.sql

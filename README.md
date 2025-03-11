@@ -19,4 +19,4 @@ python email_fetcher.py --setup-provider --provider-type imap --server "imap.exa
 
 
 ## Setup test db
-psql -U your_username -d your_database -f setup_test_data.sql
+psql -U your_username -d your_database -f testdb.sql
